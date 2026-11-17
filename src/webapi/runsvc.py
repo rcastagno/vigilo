@@ -143,12 +143,46 @@ async def drain_queue(session: AsyncSession, engine: ExecutionEngine) -> int:
     return started
 
 
+async def auto_resume_stalled(session: AsyncSession, engine: ExecutionEngine) -> int:
+    """Resume at most one silently stalled durable run per tick (capped per run)."""
+    from src.webapi.run_recover import should_auto_resume, write_auto_resume_marker
+
+    durable = bool(getattr(engine, "durable", False))
+    if not durable:
+        return 0
+    resumed = 0
+    rows = (
+        await session.scalars(select(Run).where(Run.status == RUN_RUNNING))
+    ).all()
+    for run in rows:
+        if not should_auto_resume(run, durable_engine=True):
+            continue
+        job = await session.get(Job, run.job_id)
+        if job is None:
+            continue
+        repo = await session.get(Repository, job.repository_id)
+        if repo is None:
+            continue
+        try:
+            write_auto_resume_marker(run.data_dir, count=1)
+            await engine.resume(run, job, repo)
+            await session.commit()
+            resumed += 1
+            logger.info("Auto-resumed stalled run %s → %s", run.id, run.workflow_id)
+            break  # one per tick
+        except Exception as exc:
+            await session.rollback()
+            logger.warning("auto-resume failed for run %s: %s", run.id, exc)
+    return resumed
+
+
 async def run_queue_loop(session_factory, engine, interval_s: int = 5) -> None:
     """Background poller that drains the run queue as slots free up. Best-effort."""
     while True:
         try:
             async with session_factory() as session:
                 await drain_queue(session, engine)
+                await auto_resume_stalled(session, engine)
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning("queue drain tick failed: %s", exc)
         await asyncio.sleep(interval_s)
