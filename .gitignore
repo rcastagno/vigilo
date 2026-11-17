@@ -121,6 +121,7 @@ prompts/pipeline-testing/
 .aider*
 
 TODO.local.md
+contributions.local.md
 
 # Local compose override (Traefik host ports); generated / edited on this machine only.
 deploy/docker-compose.ports-local.yml
