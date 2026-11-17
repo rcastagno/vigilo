@@ -119,3 +119,10 @@ prompts/pipeline-testing/
 .continue/
 .windsurf/
 .aider*
+
+TODO.local.md
+
+# Local compose override (Traefik host ports); generated / edited on this machine only.
+deploy/docker-compose.ports-local.yml
+platform-*.zip
+..env.un~
