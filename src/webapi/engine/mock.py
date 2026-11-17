@@ -84,15 +84,26 @@ class MockEngine:
         markers = [
             "[PHASE] Starting: preflight",
             "[PHASE] Starting: pre-recon",
-            "[AGENT] pre-recon: Completed",
+            "[AGENT] pre-recon: Starting (attempt 1)",
+            "[AGENT] pre-recon: Completed (1.0s $0.0100)",
             "[PHASE] Starting: recon",
-            "[AGENT] recon: Completed",
+            "[AGENT] recon: Starting (attempt 1)",
+            "[AGENT] recon: Completed (2.0s $0.0200)",
             "[PHASE] Starting: vulnerability-exploitation",
-            "[AGENT] injection-vuln: Completed",
+            "[AGENT] injection-vuln: Starting (attempt 1)",
+            "[injection-vuln] [LLM] Turn 1: Looking for SQL injection.\\nFound candidate at /login.",
+            "[AGENT] injection-vuln: Completed (3.0s $0.0500)",
+            "[AGENT] xss-vuln: Starting (attempt 1)",
+            "[AGENT] xss-vuln: Completed (2.5s $0.0400)",
+            "[AGENT] injection-exploit: Starting (attempt 1)",
+            "[injection-exploit] [LLM] Turn 1: Crafting exploit payload.\\nVerified RCE via UNION SELECT.",
+            "[AGENT] injection-exploit: Completed (4.0s $0.0600)",
             "[PHASE] Starting: critique",
-            "[AGENT] report-critic: Completed",
+            "[AGENT] report-critic: Starting (attempt 1)",
+            "[AGENT] report-critic: Completed (1.5s $0.0300)",
             "[PHASE] Starting: reporting",
-            "[AGENT] report: Completed",
+            "[AGENT] report: Starting (attempt 1)",
+            "[AGENT] report: Completed (2.0s $0.0200)",
         ]
         with open(os.path.join(log_dir, "workflow.log"), "w", encoding="utf-8") as fh:
             for mk in markers:
@@ -110,3 +121,6 @@ class MockEngine:
 
     async def refresh(self, run: Run) -> None:
         return None
+
+    async def resume(self, run: Run, job: Job, repo: Repository) -> None:
+        raise RuntimeError("Resume is not supported by the mock execution engine")
