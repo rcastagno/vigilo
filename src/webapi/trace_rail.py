@@ -71,6 +71,27 @@ AGENT_TO_STEP: dict[str, str] = {
 PHASE_MARKER_TO_STEP: dict[str, str] = {**PHASE_TO_STEP, **_PHASE_ALIASES}
 
 
+def _agent_label(agent: str) -> str:
+    """Short human label for nested rail rows (keeps the agent key stable)."""
+    if agent.endswith("-vuln"):
+        return f"{agent[: -len('-vuln')].replace('-', ' ').title()} vuln"
+    if agent.endswith("-exploit"):
+        return f"{agent[: -len('-exploit')].replace('-', ' ').title()} exploit"
+    return agent.replace("-", " ")
+
+
+def _agents_by_step() -> dict[str, list[dict[str, str]]]:
+    """Agents grouped under each rail step, in AGENT_PHASE_MAP order."""
+    by_step: dict[str, list[dict[str, str]]] = {k: [] for k, _ in STEP_ORDER}
+    for agent, phase in AGENT_PHASE_MAP.items():
+        step = PHASE_TO_STEP[phase]
+        by_step.setdefault(step, []).append({"key": agent, "label": _agent_label(agent)})
+    return {k: v for k, v in by_step.items() if v}
+
+
+AGENTS_BY_STEP: dict[str, list[dict[str, str]]] = _agents_by_step()
+
+
 def _steps_for_preset(preset: str) -> list[str]:
     """Ordered step keys that actually run for a preset (mirrors stages_for_preset)."""
     sel = stages_for_preset(preset)
@@ -103,4 +124,5 @@ def trace_rail_config() -> dict:
         "presets": PRESET_STEPS,
         "phase_to_step": PHASE_MARKER_TO_STEP,
         "agent_to_step": AGENT_TO_STEP,
+        "agents_by_step": AGENTS_BY_STEP,
     }

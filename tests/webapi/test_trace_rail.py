@@ -53,12 +53,22 @@ class TestTraceRailMapping:
         assert trace_rail.PRESET_STEPS["vuln_patch"] == ["preflight", "recon", "vuln", "critique", "remediation", "report"]
         assert trace_rail.PRESET_STEPS["full"] == ["preflight", "recon", "vuln", "chain", "critique", "remediation", "report"]
 
+    def test_agents_by_step_lists_vuln_and_exploit(self):
+        vuln_agents = {a["key"] for a in trace_rail.AGENTS_BY_STEP["vuln"]}
+        assert "injection-vuln" in vuln_agents
+        assert "injection-exploit" in vuln_agents
+        assert "xss-vuln" in vuln_agents
+        # chain-exploit belongs under chain, not the collapsed vuln bucket
+        assert "chain-exploit" not in vuln_agents
+        assert any(a["key"] == "chain-exploit" for a in trace_rail.AGENTS_BY_STEP["chain"])
+
 
 class TestTraceRailEndpoint:
     async def test_endpoint_returns_config(self, client, user_token):
         r = await client.get("/pipeline/trace-rail", headers={"Authorization": f"Bearer {user_token}"})
         assert r.status_code == 200
         cfg = r.json()
-        assert {"steps", "presets", "phase_to_step", "agent_to_step"} <= cfg.keys()
+        assert {"steps", "presets", "phase_to_step", "agent_to_step", "agents_by_step"} <= cfg.keys()
         assert cfg["phase_to_step"]["chain-exploitation"] == "chain"
         assert cfg["agent_to_step"]["report-critic"] == "critique"
+        assert any(a["key"] == "injection-vuln" for a in cfg["agents_by_step"]["vuln"])
