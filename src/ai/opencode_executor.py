@@ -176,6 +176,10 @@ async def execute(
                 proc.kill()
             except ProcessLookupError:
                 pass
+            try:
+                await asyncio.wait_for(proc.wait(), timeout=30)
+            except (asyncio.TimeoutError, ProcessLookupError):
+                pass
             last_error = (
                 f"idle timeout: no stdout for {int(idle_timeout_s)}s "
                 f"(tool call likely hung)"
