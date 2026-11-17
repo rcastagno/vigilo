@@ -2,14 +2,16 @@
 // completed nodes filled, the active node pulses in accent, pending nodes are
 // outlined, and a failed run marks the active node in the critical severity hue.
 //
-// Steps and the phase→step mapping are NOT hardcoded here — they come from the
-// backend (`GET /pipeline/trace-rail`, see src/webapi/trace_rail.py) so this stays
-// in lockstep with the pipeline's real phase/agent identifiers.
+// Steps and the phase→step / agent maps are NOT hardcoded here — they come from
+// the backend (`GET /pipeline/trace-rail`, see src/webapi/trace_rail.py). Nested
+// agent rows under a step surface vuln/exploit progress without digging logs.
 
 export interface RailPhase {
   key: string;
   label: string;
 }
+
+export type AgentRailStatus = "pending" | "active" | "done" | "failed";
 
 export function TraceRail({
   steps,
@@ -17,12 +19,18 @@ export function TraceRail({
   status,
   selected,
   onSelect,
+  agentsByStep = {},
+  agentStatus = {},
+  activeAgent = null,
 }: {
   steps: RailPhase[];
   activeKey: string | null;
   status: string;
   selected?: string | null;
   onSelect?: (key: string | null) => void;
+  agentsByStep?: Record<string, RailPhase[]>;
+  agentStatus?: Record<string, AgentRailStatus>;
+  activeAgent?: string | null;
 }) {
   const terminalDone = status === "succeeded";
   let activeIdx = steps.findIndex((p) => p.key === activeKey);
@@ -36,6 +44,10 @@ export function TraceRail({
         const active = i === activeIdx && !terminalDone;
         const isFailedNode = active && failed;
         const isSelected = selected === p.key;
+        const agents = agentsByStep[p.key] ?? [];
+        const showAgents = agents.length > 0 && (done || active || terminalDone || selected === p.key
+          || agents.some((a) => selected === a.key || agentStatus[a.key]));
+
         return (
           <li key={p.key} className="relative">
             <button
@@ -76,6 +88,61 @@ export function TraceRail({
                 {p.label}
               </span>
             </button>
+
+            {showAgents && (
+              <ul className="ml-5 mt-0.5 space-y-0.5 border-l border-line pl-3">
+                {agents.map((a) => {
+                  const st: AgentRailStatus =
+                    agentStatus[a.key]
+                    ?? (terminalDone ? "done" : "pending");
+                  const agentActive = activeAgent === a.key || st === "active";
+                  const agentSelected = selected === a.key;
+                  const agentFailed = st === "failed";
+                  const agentDone = st === "done" || (terminalDone && st !== "failed");
+                  return (
+                    <li key={a.key}>
+                      <button
+                        type="button"
+                        onClick={() => onSelect?.(agentSelected ? null : a.key)}
+                        className={[
+                          "flex w-full items-center gap-2 rounded-md px-1.5 py-1 text-left transition",
+                          agentSelected ? "bg-canvas" : "hover:bg-canvas",
+                        ].join(" ")}
+                        title={`Show logs for ${a.key}`}
+                      >
+                        <span className="relative inline-flex h-2.5 w-2.5 items-center justify-center">
+                          {agentActive && !agentFailed && (
+                            <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-accent opacity-50" />
+                          )}
+                          <span
+                            className={[
+                              "relative h-2 w-2 rounded-full border",
+                              agentFailed
+                                ? "border-severity-critical bg-severity-critical"
+                                : agentDone || agentActive
+                                  ? "border-accent bg-accent"
+                                  : "border-line bg-surface",
+                            ].join(" ")}
+                          />
+                        </span>
+                        <span
+                          className={[
+                            "truncate text-[11px] leading-tight",
+                            agentSelected
+                              ? "font-medium text-accent"
+                              : agentDone || agentActive
+                                ? "text-ink"
+                                : "text-slate",
+                          ].join(" ")}
+                        >
+                          {a.label}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </li>
         );
       })}

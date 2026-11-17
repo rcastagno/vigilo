@@ -169,6 +169,8 @@ export interface TraceRailConfig {
   presets: Record<string, string[]>;
   phase_to_step: Record<string, string>;
   agent_to_step: Record<string, string>;
+  /** Agents nested under each coarse rail step (vuln/exploit pairs live under `vuln`). */
+  agents_by_step: Record<string, { key: string; label: string }[]>;
 }
 
 export const api = {

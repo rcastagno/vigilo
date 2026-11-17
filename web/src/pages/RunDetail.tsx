@@ -3,34 +3,103 @@ import { useParams } from "react-router-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, getToken, type Job, type Run, type TraceRailConfig } from "../api/client";
-import { TraceRail, type RailPhase } from "../components/TraceRail";
+import { TraceRail, type AgentRailStatus, type RailPhase } from "../components/TraceRail";
+import { LogPanel } from "../components/LogPanel";
 import { StatusDot } from "../components/StatusDot";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 
-// Slice a text workflow.log by rail step using the pipeline's own markers
-// ("[PHASE] Starting: <name>" / "[AGENT] <name>: ...") — the log is human-readable
-// text, not JSON. Each marker's raw phase/agent identifier is mapped to a rail step
-// via the backend-provided config (no name guessing); each line is attributed to
-// the most recent step seen.
-function linesForPhase(
+
+type AgentProgress = {
+  status: Record<string, AgentRailStatus>;
+  activeAgent: string | null;
+};
+
+/** Derive per-agent status from workflow.log AGENT / ERROR markers. */
+function agentProgressFromLines(lines: string[]): AgentProgress {
+  const status: Record<string, AgentRailStatus> = {};
+  let activeAgent: string | null = null;
+  for (const ln of lines) {
+    const start = ln.match(/\[AGENT\]\s*([\w-]+)\s*:\s*Starting/);
+    if (start) {
+      status[start[1]] = "active";
+      activeAgent = start[1];
+      continue;
+    }
+    const done = ln.match(/\[AGENT\]\s*([\w-]+)\s*:\s*Completed/);
+    if (done) {
+      status[done[1]] = "done";
+      if (activeAgent === done[1]) activeAgent = null;
+      continue;
+    }
+    const fail =
+      ln.match(/\[AGENT\]\s*([\w-]+)\s*:\s*FAILED/) ||
+      ln.match(/\[ERROR\]\s*([\w-]+)\s*:/);
+    if (fail) {
+      status[fail[1]] = "failed";
+      if (activeAgent === fail[1]) activeAgent = null;
+    }
+  }
+  return { status, activeAgent };
+}
+
+// Slice a text workflow.log by rail step or individual agent using the pipeline's
+// own markers ("[PHASE] Starting: <name>" / "[AGENT] <name>: ..."). Each marker's
+// raw phase/agent identifier is mapped via the backend-provided config.
+function linesForSelection(
   lines: string[],
   selected: string | null,
   rail: TraceRailConfig | null,
 ): string[] {
   if (!selected || !rail) return lines;
+  const stepKeys = new Set(rail.steps.map((s) => s.key));
+  const isStep = stepKeys.has(selected);
   const stepFor = (name: string): string | null =>
     rail.phase_to_step[name] ?? rail.agent_to_step[name] ?? null;
+
   const out: string[] = [];
-  let current: string | null = null;
+  let currentStep: string | null = null;
+  let currentAgent: string | null = null;
+
   for (const ln of lines) {
     const pm = ln.match(/\[PHASE\]\s*\w+\s*:\s*(.+?)\s*$/);
     const am = ln.match(/\[AGENT\]\s*([\w-]+)\s*:/);
-    if (pm) current = stepFor(pm[1]);
-    else if (am) current = stepFor(am[1]);
-    if (current === selected) out.push(ln);
+    const llm = ln.match(/\]\s+\[([\w-]+)\]\s+\[LLM\]/);
+    if (pm) {
+      currentStep = stepFor(pm[1]);
+      currentAgent = null;
+    } else if (am) {
+      currentAgent = am[1];
+      currentStep = stepFor(am[1]) ?? currentStep;
+    } else if (llm) {
+      currentAgent = llm[1];
+      currentStep = stepFor(llm[1]) ?? currentStep;
+    }
+
+    if (isStep) {
+      if (currentStep === selected) out.push(ln);
+    } else if (currentAgent === selected) {
+      out.push(ln);
+    }
   }
   return out;
+}
+
+function selectionLabel(
+  selected: string | null,
+  railSteps: RailPhase[],
+  rail: TraceRailConfig | null,
+): string {
+  if (!selected) return "";
+  const step = railSteps.find((s) => s.key === selected);
+  if (step) return step.label;
+  if (rail) {
+    for (const agents of Object.values(rail.agents_by_step ?? {})) {
+      const hit = agents.find((a) => a.key === selected);
+      if (hit) return hit.label;
+    }
+  }
+  return selected;
 }
 
 export function RunDetail() {
@@ -42,6 +111,8 @@ export function RunDetail() {
   const [report, setReport] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rail, setRail] = useState<TraceRailConfig | null>(null);
+  const [softWrap, setSoftWrap] = useState(true);
+  const [formatLlm, setFormatLlm] = useState(false);
   const logScroll = useRef<HTMLDivElement>(null);
 
   // Fetch the canonical rail steps + phase/agent → step map once (static config).
@@ -115,8 +186,13 @@ export function RunDetail() {
   }, [id, run]);
 
   const shownLines = useMemo(
-    () => linesForPhase(lines, selectedPhase, rail),
+    () => linesForSelection(lines, selectedPhase, rail),
     [lines, selectedPhase, rail],
+  );
+
+  const { status: agentStatus, activeAgent } = useMemo(
+    () => agentProgressFromLines(lines),
+    [lines],
   );
 
   // Auto-scroll the log container to the bottom on new lines, but only if the user
@@ -126,7 +202,7 @@ export function RunDetail() {
     if (!el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 60;
     if (nearBottom) el.scrollTop = el.scrollHeight;
-  }, [shownLines]);
+  }, [shownLines, softWrap, formatLlm]);
 
   async function downloadReport() {
     const resp = await fetch(`/api/runs/${id}/artifacts/report_md`, {
@@ -155,23 +231,30 @@ export function RunDetail() {
       }))
     : [];
   const activeKey = rail && run.current_phase ? rail.phase_to_step[run.current_phase] ?? null : null;
+  const agentsByStep = rail?.agents_by_step ?? {};
+  const selLabel = selectionLabel(selectedPhase, railSteps, rail);
 
   return (
     <div>
-      <div className="mb-6 flex items-center gap-3">
+      <div className="mb-6 flex flex-wrap items-center gap-3">
         <StatusDot status={run.status} />
         <h1 className="text-xl font-semibold">Run {run.id.slice(0, 8)}</h1>
         <span className="mono text-sm text-slate">
           {job?.stage_preset} · {run.status}
+          {run.current_phase ? ` · ${run.current_phase}` : ""}
           {run.total_cost_usd != null ? ` · $${run.total_cost_usd.toFixed(2)}` : ""}
           {run.commit_sha ? ` · commit ${run.commit_sha.slice(0, 8)}` : ""}
         </span>
-        {!TERMINAL.has(run.status) && (
-          <button className="btn-ghost ml-auto" onClick={() => id && api.cancelRun(id).then(setRun)}>
-            Cancel
-          </button>
-        )}
+        <div className="ml-auto flex items-center gap-2">
+          {!TERMINAL.has(run.status) && (
+            <button className="btn-ghost" type="button" onClick={() => id && api.cancelRun(id).then(setRun)}>
+              Cancel
+            </button>
+          )}
+        </div>
       </div>
+
+
 
       {(run.error_summary || run.status === "failed") && (
         <div className="card mb-4 border-severity-critical/30 bg-severity-critical/5 p-3 text-sm">
@@ -184,7 +267,7 @@ export function RunDetail() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[220px_minmax(0,1fr)] lg:gap-8">
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-8">
         <aside className="card min-w-0 self-start p-4">
           <h2 className="mb-3 px-2 text-xs font-semibold uppercase tracking-wide text-slate">
             Trace Rail
@@ -195,15 +278,20 @@ export function RunDetail() {
             status={run.status}
             selected={selectedPhase}
             onSelect={setSelectedPhase}
+            agentsByStep={agentsByStep}
+            agentStatus={agentStatus}
+            activeAgent={activeAgent}
           />
-          <p className="mt-3 px-2 text-xs text-slate">Click a step to filter its logs.</p>
+          <p className="mt-3 px-2 text-xs text-slate">
+            Click a step or agent to filter its logs.
+          </p>
         </aside>
 
         <section className="card flex h-[70vh] min-w-0 flex-col overflow-hidden">
           <div className="flex items-center justify-between border-b border-line px-4 py-2">
             <span className="text-xs font-semibold uppercase tracking-wide text-slate">
               Evidence / logs
-              {selectedPhase ? ` · ${railSteps.find((s) => s.key === selectedPhase)?.label ?? selectedPhase}` : ""}
+              {selectedPhase ? ` · ${selLabel}` : ""}
             </span>
             {selectedPhase && (
               <button className="text-xs text-accent hover:underline" onClick={() => setSelectedPhase(null)}>
@@ -211,15 +299,19 @@ export function RunDetail() {
               </button>
             )}
           </div>
-          <div ref={logScroll} className="min-h-0 flex-1 overflow-auto bg-ink/[0.015] p-4">
-            <pre className="mono whitespace-pre-wrap break-all text-xs leading-relaxed text-ink">
-              {shownLines.length
-                ? shownLines.join("\n")
-                : selectedPhase
-                  ? "No log lines for this step yet."
-                  : "Waiting for output…"}
-            </pre>
-          </div>
+          <LogPanel
+            lines={shownLines}
+            emptyMessage={
+              selectedPhase
+                ? "No log lines for this step yet."
+                : "Waiting for output…"
+            }
+            softWrap={softWrap}
+            onSoftWrapChange={setSoftWrap}
+            formatLlm={formatLlm}
+            onFormatLlmChange={setFormatLlm}
+            scrollRef={logScroll}
+          />
         </section>
       </div>
 
