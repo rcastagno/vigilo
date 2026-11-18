@@ -26,6 +26,8 @@ class ExecutionEngine(Protocol):
 
     async def refresh(self, run: Run) -> None: ...
 
+    async def resume(self, run: Run, job: Job, repo: Repository) -> None: ...
+
 
 def new_run_identity() -> tuple[uuid.UUID, str, str]:
     """Return (run_id, session_id, task_queue) for a fresh run."""

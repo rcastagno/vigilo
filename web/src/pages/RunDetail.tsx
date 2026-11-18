@@ -6,9 +6,17 @@ import { api, getToken, type Job, type Run, type TraceRailConfig } from "../api/
 import { TraceRail, type AgentRailStatus, type RailPhase } from "../components/TraceRail";
 import { LogPanel } from "../components/LogPanel";
 import { StatusDot } from "../components/StatusDot";
+import { ConfirmDialog } from "../components/ConfirmDialog";
 
 const TERMINAL = new Set(["succeeded", "failed", "cancelled"]);
 
+function formatIdle(seconds: number | null | undefined): string {
+  if (seconds == null || seconds < 0) return "";
+  if (seconds < 60) return `${seconds}s`;
+  const m = Math.floor(seconds / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h ${m % 60}m`;
+}
 
 type AgentProgress = {
   status: Record<string, AgentRailStatus>;
@@ -113,6 +121,7 @@ export function RunDetail() {
   const [rail, setRail] = useState<TraceRailConfig | null>(null);
   const [softWrap, setSoftWrap] = useState(true);
   const [formatLlm, setFormatLlm] = useState(false);
+  const [confirmRecover, setConfirmRecover] = useState(false);
   const logScroll = useRef<HTMLDivElement>(null);
 
   // Fetch the canonical rail steps + phase/agent → step map once (static config).
@@ -246,6 +255,11 @@ export function RunDetail() {
           {run.commit_sha ? ` · commit ${run.commit_sha.slice(0, 8)}` : ""}
         </span>
         <div className="ml-auto flex items-center gap-2">
+          {run.recoverable && (
+            <button className="btn-ghost" type="button" onClick={() => setConfirmRecover(true)}>
+              Recover
+            </button>
+          )}
           {!TERMINAL.has(run.status) && (
             <button className="btn-ghost" type="button" onClick={() => id && api.cancelRun(id).then(setRun)}>
               Cancel
@@ -254,7 +268,28 @@ export function RunDetail() {
         </div>
       </div>
 
+      {run.stalled && (
+        <div className="card mb-4 border-amber-500/30 bg-amber-500/5 p-3 text-sm text-ink">
+          No new workflow log lines for {formatIdle(run.log_idle_seconds)} — the run may be
+          waiting on the model or wedged. Use <span className="font-medium">Recover</span> to
+          terminate the current Temporal execution and resume from the last completed agents.
+        </div>
+      )}
 
+      {confirmRecover && id && (
+        <ConfirmDialog
+          title="Recover this run?"
+          body="This terminates the current Temporal workflow and starts a resume from the session workspace (completed agents are skipped). Use when Critique or another phase is silently stuck."
+          confirmLabel="Recover"
+          danger
+          onCancel={() => setConfirmRecover(false)}
+          onConfirm={async () => {
+            const next = await api.resumeRun(id);
+            setRun(next);
+            setConfirmRecover(false);
+          }}
+        />
+      )}
 
       {(run.error_summary || run.status === "failed") && (
         <div className="card mb-4 border-severity-critical/30 bg-severity-critical/5 p-3 text-sm">

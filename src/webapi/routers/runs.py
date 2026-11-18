@@ -22,11 +22,17 @@ from src.webapi.models import (
     RUN_SUCCEEDED,
     RUN_TERMINAL,
     Job,
+    Repository,
     Run,
     User,
 )
 from src.webapi.notifications import Mailer, build_completion_message
 from src.webapi.reports import read_report
+from src.webapi.run_recover import (
+    is_recoverable,
+    is_stalled,
+    workflow_log_idle_seconds,
+)
 from src.webapi.schemas import RunRead
 from src.webapi.settings import get_settings
 
@@ -112,7 +118,8 @@ async def run_status_loop(session_factory, engine, interval_s: int = 15) -> None
         await asyncio.sleep(interval_s)
 
 
-def run_to_read(r: Run) -> RunRead:
+def run_to_read(r: Run, *, durable_engine: bool = False) -> RunRead:
+    idle = workflow_log_idle_seconds(r)
     return RunRead(
         id=r.id, job_id=r.job_id, triggered_by=r.triggered_by,
         trigger_type=r.trigger_type, status=r.status, current_phase=r.current_phase,
@@ -120,6 +127,9 @@ def run_to_read(r: Run) -> RunRead:
         total_cost_usd=r.total_cost_usd, error_summary=r.error_summary,
         commit_sha=r.commit_sha,
         started_at=r.started_at, finished_at=r.finished_at, created_at=r.created_at,
+        stalled=is_stalled(r),
+        log_idle_seconds=idle,
+        recoverable=is_recoverable(r, durable_engine=durable_engine),
     )
 
 
@@ -157,7 +167,7 @@ async def list_runs(
             continue
         if repository_id is not None and repo_id != repository_id:
             continue
-        out.append(run_to_read(r))
+        out.append(run_to_read(r, durable_engine=False))
     return out
 
 
@@ -194,7 +204,8 @@ async def get_run(
             cleanup_run_source(run.data_dir)
         except Exception:
             pass
-    return run_to_read(run)
+    durable = bool(getattr(engine, "durable", False))
+    return run_to_read(run, durable_engine=durable)
 
 
 @router.post("/runs/{run_id}/cancel", response_model=RunRead)
@@ -214,7 +225,44 @@ async def cancel_run(
         await engine.cancel(run)
         await session.commit()
         await session.refresh(run)
-    return run_to_read(run)
+    durable = bool(getattr(engine, "durable", False))
+    return run_to_read(run, durable_engine=durable)
+
+
+@router.post("/runs/{run_id}/resume", response_model=RunRead)
+async def resume_run(
+    run_id: uuid.UUID,
+    user: User = Depends(current_active_user),
+    session: AsyncSession = Depends(get_async_session),
+    engine: ExecutionEngine = Depends(get_engine),
+) -> RunRead:
+    """Terminate the current Temporal execution and resume from the session workspace."""
+    run = await session.get(Run, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail="Run not found")
+    await require_run_access(session, user, run)
+    if not await _may_control(run, user, session):
+        raise HTTPException(status_code=403, detail="Not permitted to resume this run")
+    durable = bool(getattr(engine, "durable", False))
+    if not is_recoverable(run, durable_engine=durable):
+        raise HTTPException(
+            status_code=400,
+            detail="Run is not recoverable (need durable engine + workspace + running/failed)",
+        )
+    job = await session.get(Job, run.job_id)
+    if job is None:
+        raise HTTPException(status_code=400, detail="Job no longer exists")
+    repo = await session.get(Repository, job.repository_id)
+    if repo is None:
+        raise HTTPException(status_code=400, detail="Repository no longer exists")
+    try:
+        await engine.resume(run, job, repo)
+    except Exception as exc:
+        logger.warning("resume failed for run %s: %s", run.id, exc)
+        raise HTTPException(status_code=500, detail=f"Resume failed: {exc}") from exc
+    await session.commit()
+    await session.refresh(run)
+    return run_to_read(run, durable_engine=durable)
 
 
 @router.delete("/runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)

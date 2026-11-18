@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import re
+import time
 
 from src.webapi.engine.base import build_stages_payload
 from src.webapi.models import (
@@ -28,6 +29,7 @@ from src.webapi.models import (
     Repository,
     Run,
 )
+from src.webapi.run_recover import session_workspace_exists
 from src.webapi.settings import get_settings
 
 logger = logging.getLogger(__name__)
@@ -245,3 +247,98 @@ class TemporalEngine:
         except Exception as exc:  # pragma: no cover
             logger.warning("terminate failed for %s: %s", run.id, exc)
         run.status = RUN_CANCELLED
+
+    async def _terminate_if_running(self, workflow_id: str | None, *, reason: str) -> None:
+        if not workflow_id:
+            return
+        try:
+            client = await self._client()
+            handle = client.get_workflow_handle(workflow_id)
+            desc = await handle.describe()
+            status = getattr(desc.status, "name", None)
+            if status == "RUNNING":
+                await handle.terminate(reason=reason)
+                logger.info("Terminated workflow %s (%s)", workflow_id, reason)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("terminate %s failed: %s", workflow_id, exc)
+
+    async def resume(self, run: Run, job: Job, repo: Repository) -> None:
+        """Terminate the current Temporal execution and restart from the session workspace."""
+        if not run.session_id or not run.data_dir:
+            raise RuntimeError("Run has no session_id/data_dir to resume from")
+        from src.webapi.run_recover import repo_source_present
+
+        if not session_workspace_exists(run):
+            raise RuntimeError(
+                f"Workspace session.json missing for session {run.session_id}"
+            )
+        if not repo_source_present(run):
+            raise RuntimeError(
+                "Source checkout was cleaned up; cannot resume this run"
+            )
+
+        settings = get_settings()
+        repo_dir = os.path.join(run.data_dir, "repo")
+        if not os.path.isdir(repo_dir):
+            raise RuntimeError(f"Repo checkout missing at {repo_dir}")
+
+        from src.ai.llm_run_config import workflow_pipeline_config
+        from src.webapi.db import _session_maker
+        from src.webapi.llm_config import resolve_merged_llm_config
+
+        async with _session_maker()() as session:
+            llm_config = await resolve_merged_llm_config(session, repo, job)
+        # Prefer on-disk snapshot from the original start when present.
+        llm_path = os.path.join(run.data_dir, "llm_config.json")
+        if os.path.isfile(llm_path):
+            try:
+                with open(llm_path, encoding="utf-8") as fh:
+                    disk = json.load(fh)
+                if isinstance(disk, dict) and disk:
+                    llm_config = {**llm_config, **{k: v for k, v in disk.items() if v}}
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.warning("could not read llm_config.json for resume %s: %s", run.id, exc)
+        try:
+            with open(llm_path, "w", encoding="utf-8") as fh:
+                json.dump(llm_config, fh, indent=2)
+        except OSError as exc:
+            logger.warning("could not write llm_config.json for resume %s: %s", run.id, exc)
+
+        await self._terminate_if_running(
+            run.workflow_id, reason="platform recover/resume"
+        )
+
+        scan = repo.scan_config or {}
+        wf_pipeline = workflow_pipeline_config(llm_config)
+        new_wf = f"{run.session_id}_resume_{int(time.time() * 1000)}"
+        input_data = {
+            "web_url": job.target_url or "",
+            "repo_path": repo_dir,
+            "session_id": run.session_id,
+            "workflow_id": new_wf,
+            "stages": build_stages_payload(job),
+            "description": scan.get("description", ""),
+            "llm_config": llm_config,
+            "pipeline_config": wf_pipeline,
+            "resume_from_workspace": run.session_id,
+        }
+
+        client = await self._client()
+        await client.start_workflow(
+            "PentestPipelineWorkflow",
+            input_data,
+            id=new_wf,
+            task_queue=settings.temporal_task_queue,
+        )
+        run.workflow_id = new_wf
+        run.status = RUN_RUNNING
+        run.finished_at = None
+        run.error_summary = None
+        run.current_phase = "preflight"
+        if run.started_at is None:
+            from datetime import datetime, timezone
+            run.started_at = datetime.now(timezone.utc)
+        logger.info(
+            "Resumed run %s as workflow %s (workspace %s)",
+            run.id, new_wf, run.session_id,
+        )
