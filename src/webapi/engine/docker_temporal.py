@@ -176,3 +176,73 @@ class DockerTemporalEngine:
         except Exception as exc:  # pragma: no cover
             logger.warning("container stop failed for run %s: %s", run.id, exc)
         run.status = RUN_CANCELLED
+
+    async def resume(self, run: Run, job: Job, repo: Repository) -> None:
+        """Stop the current worker/workflow and relaunch with CLI --workspace resume."""
+        import docker  # lazy
+
+        from src.webapi.run_recover import session_workspace_exists
+
+        if not session_workspace_exists(run):
+            raise RuntimeError(
+                f"Workspace session.json missing for session {run.session_id}"
+            )
+
+        # Tear down the previous execution (best-effort).
+        try:
+            from temporalio.client import Client
+
+            if run.workflow_id:
+                client = await Client.connect(get_settings().temporal_address)
+                handle = client.get_workflow_handle(run.workflow_id)
+                desc = await handle.describe()
+                if getattr(desc.status, "name", None) == "RUNNING":
+                    await handle.terminate(reason="platform recover/resume")
+        except Exception as exc:  # pragma: no cover
+            logger.warning("resume terminate failed for %s: %s", run.id, exc)
+        try:
+            if run.container_id:
+                docker.from_env().containers.get(run.container_id).stop(timeout=10)
+        except Exception as exc:  # pragma: no cover
+            logger.warning("resume container stop failed for %s: %s", run.id, exc)
+
+        # Relaunch via start(); CLI resume needs --workspace on the worker command.
+        # Patch start by temporarily wrapping: call start then it won't resume.
+        # Instead duplicate the launch with --workspace.
+        settings = get_settings()
+        repo_dir = os.path.join(run.data_dir, "repo")
+        from src.ai.llm_run_config import llm_config_to_env
+        from src.webapi.db import _session_maker
+        from src.webapi.llm_config import resolve_merged_llm_config
+
+        env = {
+            "TARGET_URL": job.target_url or "",
+            "TEMPORAL_ADDRESS": settings.temporal_address,
+        }
+        async with _session_maker()() as session:
+            merged = await resolve_merged_llm_config(session, repo, job)
+        env.update(llm_config_to_env(merged))
+        task_queue = run.task_queue or f"vigilo-{run.id.hex[:12]}"
+        command = [
+            "python", "-m", "src.temporal.worker", "/repos/target",
+            "--task-queue", task_queue,
+            "--url", job.target_url or "",
+            "--session-id", run.session_id,
+            "--workspace", run.session_id,
+            "--stages", json.dumps(build_stages_payload(job)),
+        ]
+        container = docker.from_env().containers.run(
+            settings.worker_image,
+            command=command,
+            environment=env,
+            volumes={repo_dir: {"bind": "/repos/target", "mode": "rw"}},
+            network="lab-net",
+            detach=True,
+            labels={"vigilo.run_id": str(run.id), "vigilo.resume": "1"},
+        )
+        run.container_id = container.id
+        run.status = RUN_RUNNING
+        run.finished_at = None
+        run.error_summary = None
+        run.current_phase = "preflight"
+        logger.info("Resumed run %s in container %s", run.id, container.id)

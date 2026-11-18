@@ -23,6 +23,7 @@ class FakeEngine:
     def __init__(self) -> None:
         self.started: list[str] = []
         self.cancelled: list[str] = []
+        self.resumed: list[str] = []
 
     async def start(self, run: Run, job: Job, repo: Repository) -> None:
         self.started.append(str(run.id))
@@ -39,3 +40,6 @@ class FakeEngine:
     async def refresh(self, run: Run) -> None:
         # No-op: fake runs stay in whatever state start()/cancel() left them.
         return None
+
+    async def resume(self, run: Run, job: Job, repo: Repository) -> None:
+        raise RuntimeError("Resume is not supported by the fake execution engine")

@@ -245,6 +245,10 @@ class RunRead(BaseModel):
     started_at: datetime | None
     finished_at: datetime | None
     created_at: datetime
+    # Computed (not persisted): stall / recover hints for Run Detail.
+    stalled: bool = False
+    log_idle_seconds: int | None = None
+    recoverable: bool = False
 
 
 class ScheduleCreate(BaseModel):

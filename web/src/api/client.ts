@@ -85,6 +85,7 @@ export interface Job {
   target_url: string | null;
   engine: string;
   notify_email: boolean;
+  pipeline_overrides: Record<string, string>;
 }
 export interface Run {
   id: string;
@@ -100,6 +101,9 @@ export interface Run {
   started_at: string | null;
   finished_at: string | null;
   created_at: string;
+  stalled?: boolean;
+  log_idle_seconds?: number | null;
+  recoverable?: boolean;
 }
 
 export interface Schedule {
@@ -208,6 +212,7 @@ export const api = {
     request<Run[]>(`/runs${repositoryId ? `?repository_id=${repositoryId}` : ""}`),
   run: (id: string) => request<Run>(`/runs/${id}`),
   cancelRun: (id: string) => request<Run>(`/runs/${id}/cancel`, { method: "POST" }),
+  resumeRun: (id: string) => request<Run>(`/runs/${id}/resume`, { method: "POST" }),
   repository: (id: string) => request<Repository>(`/repositories/${id}`),
   updateRepository: (id: string, body: Record<string, unknown>) =>
     request<Repository>(`/repositories/${id}`, { method: "PATCH", body: JSON.stringify(body) }),
