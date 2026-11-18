@@ -194,7 +194,18 @@ class PentestPipelineWorkflow:
         else:
             retry = PRODUCTION_RETRY
 
-        max_concurrent = pipeline_config.get("max_concurrent_pipelines", 8)
+        # Platform job/repo overrides land in llm_config; CLI YAML uses pipeline_config.
+        llm_config = input.get("llm_config") or {}
+        raw_conc = pipeline_config.get("max_concurrent_pipelines")
+        if raw_conc is None:
+            raw_conc = llm_config.get("max_concurrent_pipelines")
+        try:
+            max_concurrent = int(raw_conc) if raw_conc is not None else 8
+        except (TypeError, ValueError):
+            max_concurrent = 8
+        if max_concurrent < 1:
+            max_concurrent = 8
+        workflow.logger.info("max_concurrent_pipelines=%d", max_concurrent)
 
         # Resolve which optional phases run. None → full pipeline (legacy).
         # Invariants (enforced in resolve_stages): exploitation is welded to vuln,
@@ -221,6 +232,7 @@ class PentestPipelineWorkflow:
             session_id=session_id,
             config_path=input.get("config_path"),
             output_path=input.get("output_path"),
+            llm_config=input.get("llm_config") or {},
         )
 
         # Handle resume: load completed agents from previous run

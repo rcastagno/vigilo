@@ -85,6 +85,7 @@ export interface Job {
   target_url: string | null;
   engine: string;
   notify_email: boolean;
+  pipeline_overrides: Record<string, string>;
 }
 export interface Run {
   id: string;

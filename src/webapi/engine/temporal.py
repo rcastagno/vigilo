@@ -136,6 +136,21 @@ class TemporalEngine:
                 pass
 
         scan = repo.scan_config or {}
+        # Merge admin → repo → job LLM overrides; worker .env fills unset keys.
+        from src.webapi.db import _session_maker
+        from src.webapi.llm_config import resolve_merged_llm_config
+
+        from src.ai.llm_run_config import workflow_pipeline_config
+
+        async with _session_maker()() as session:
+            llm_config = await resolve_merged_llm_config(session, repo, job)
+        try:
+            with open(os.path.join(run.data_dir, "llm_config.json"), "w", encoding="utf-8") as fh:
+                json.dump(llm_config, fh, indent=2)
+        except OSError as exc:  # pragma: no cover - best-effort debug artifact
+            logger.warning("could not write llm_config.json for run %s: %s", run.id, exc)
+        # Workflow concurrency (vuln-type pipelines) — same override hierarchy as models.
+        wf_pipeline = workflow_pipeline_config(llm_config)
         input_data = {
             "web_url": job.target_url or "",
             "repo_path": repo_dir,
@@ -143,6 +158,8 @@ class TemporalEngine:
             "workflow_id": run.session_id,
             "stages": build_stages_payload(job),
             "description": scan.get("description", ""),
+            "llm_config": llm_config,
+            "pipeline_config": wf_pipeline,
         }
         from temporalio.common import WorkflowIDConflictPolicy
 

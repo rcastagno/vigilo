@@ -71,6 +71,62 @@ class TestRepoConfigOverride:
         assert resp.status_code == 422
 
 
+class TestJobPipelineOverrides:
+    async def test_create_and_patch_pipeline_overrides(self, client, user_token):
+        h = {"Authorization": f"Bearer {user_token}"}
+        repo = (await client.post("/repositories", headers=h,
+                json={"name": "r-ov", "source_type": "upload"})).json()
+        job = (await client.post("/jobs", headers=h, json={
+            "repository_id": repo["id"], "name": "j", "stage_preset": "vuln",
+            "pipeline_overrides": {
+                "executor": "codex",
+                "model_large": "Qwen3.8-Flash-Next",
+            },
+        })).json()
+        assert job["pipeline_overrides"]["executor"] == "codex"
+        assert job["pipeline_overrides"]["model_large"] == "Qwen3.8-Flash-Next"
+        patched = await client.patch(f"/jobs/{job['id']}", headers=h, json={
+            "pipeline_overrides": {"model_large": "other-model"},
+        })
+        assert patched.status_code == 200
+        assert patched.json()["pipeline_overrides"]["model_large"] == "other-model"
+
+    async def test_bad_executor_rejected(self, client, user_token):
+        h = {"Authorization": f"Bearer {user_token}"}
+        repo = (await client.post("/repositories", headers=h,
+                json={"name": "r-bad", "source_type": "upload"})).json()
+        bad = await client.post("/jobs", headers=h, json={
+            "repository_id": repo["id"], "name": "j", "stage_preset": "vuln",
+            "pipeline_overrides": {"executor": "not-a-backend"},
+        })
+        assert bad.status_code == 422
+
+    async def test_unknown_override_key_rejected(self, client, user_token):
+        h = {"Authorization": f"Bearer {user_token}"}
+        repo = (await client.post("/repositories", headers=h,
+                json={"name": "r-unk", "source_type": "upload"})).json()
+        bad = await client.post("/jobs", headers=h, json={
+            "repository_id": repo["id"], "name": "j", "stage_preset": "vuln",
+            "pipeline_overrides": {"bogus": "x"},
+        })
+        assert bad.status_code == 422
+
+    async def test_max_concurrent_pipelines_accepted(self, client, user_token):
+        h = {"Authorization": f"Bearer {user_token}"}
+        repo = (await client.post("/repositories", headers=h,
+                json={"name": "r-conc", "source_type": "upload"})).json()
+        job = (await client.post("/jobs", headers=h, json={
+            "repository_id": repo["id"], "name": "j", "stage_preset": "vuln",
+            "pipeline_overrides": {"max_concurrent_pipelines": "1"},
+        })).json()
+        assert job["pipeline_overrides"]["max_concurrent_pipelines"] == "1"
+        bad = await client.post("/jobs", headers=h, json={
+            "repository_id": repo["id"], "name": "j2", "stage_preset": "vuln",
+            "pipeline_overrides": {"max_concurrent_pipelines": "0"},
+        })
+        assert bad.status_code == 422
+
+
 class TestOnceSchedule:
     async def test_once_requires_run_at(self, client, user_token):
         h = {"Authorization": f"Bearer {user_token}"}

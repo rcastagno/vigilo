@@ -1,13 +1,8 @@
 import { useEffect, useState } from "react";
 import { TrashIcon, XMarkIcon } from "@heroicons/react/24/outline";
 import { api, type AccessGrant, type Repository } from "../api/client";
+import { PipelineConfigFields, cleanPipelineConfig } from "./PipelineConfigFields";
 
-const CONFIG_FIELDS = [
-  { key: "executor", label: "Executor (claude/codex)" },
-  { key: "model_small", label: "Model — small" },
-  { key: "model_medium", label: "Model — medium" },
-  { key: "model_large", label: "Model — large" },
-];
 const SCAN_FIELDS = [
   { key: "description", label: "Description / context" },
   { key: "focus", label: "Focus on" },
@@ -54,7 +49,7 @@ export function RepoSettingsDrawer({
       await api.updateRepository(repo.id, {
         is_private: isPrivate,
         push_patches: pushPatches,
-        pipeline_config: clean(cfg),
+        pipeline_config: cleanPipelineConfig(cfg),
         scan_config: clean(scan),
         ...(gitlabToken ? { gitlab_token: gitlabToken } : {}),
       });
@@ -188,18 +183,12 @@ export function RepoSettingsDrawer({
           ))}
         </section>
 
-        <section className="mb-6">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate">
-            Pipeline config (overrides global)
-          </h3>
-          {CONFIG_FIELDS.map((f) => (
-            <div key={f.key} className="mb-3">
-              <label htmlFor={`cfg-${f.key}`} className="mb-1 block text-sm text-slate">{f.label}</label>
-              <input id={`cfg-${f.key}`} className="field" placeholder="(use global default)"
-                     value={cfg[f.key] ?? ""} onChange={(e) => setCfg({ ...cfg, [f.key]: e.target.value })} />
-            </div>
-          ))}
-        </section>
+        <PipelineConfigFields
+          title="Pipeline config (overrides global)"
+          helper="Empty fields fall back to admin defaults, then worker .env. Job overrides can still override these."
+          values={cfg}
+          onChange={setCfg}
+        />
 
         <div className="flex items-center gap-3">
           <button className="btn-primary" onClick={save}>Save</button>
