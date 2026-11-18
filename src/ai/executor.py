@@ -123,10 +123,11 @@ _CODEX_SIGNAL_VARS = (
 )
 
 
-def get_executor_type() -> ExecutorType:
+def get_executor_type(llm_config: dict[str, str] | None = None) -> ExecutorType:
     """Determine which executor backend to use.
 
     Resolution order:
+      0. Per-run ``llm_config["executor"]`` when set (admin/repo/job merge).
       1. Explicit ``VIGILO_EXECUTOR`` env var (``claude`` / ``opencode`` / ``codex``);
          any other value falls through to ``claude``.
       2. Auto-detect: Codex signal vars → ``codex``; else OpenCode/LiteLLM signal
@@ -134,6 +135,13 @@ def get_executor_type() -> ExecutorType:
          backend-specific (low collision risk).
       3. Default: ``claude``
     """
+    if llm_config:
+        from src.ai.llm_run_config import VALID_EXECUTORS, _clean_value
+
+        explicit_cfg = _clean_value(llm_config.get("executor"))
+        if explicit_cfg and explicit_cfg.lower() in VALID_EXECUTORS:
+            return explicit_cfg.lower()  # type: ignore[return-value]
+
     explicit = os.environ.get("VIGILO_EXECUTOR", "").strip().lower()
     if explicit:
         if explicit == "opencode":
@@ -168,9 +176,22 @@ async def execute(
     on_stream: StreamCallback | None = None,
     extra_env: dict[str, str] | None = None,
     idle_timeout_s: float | None = None,
+    llm_config: dict[str, str] | None = None,
 ) -> ExecutorResult:
-    """Dispatch execution to the configured backend."""
-    executor_type = get_executor_type()
+    """Dispatch execution to the configured backend.
+
+    ``llm_config`` is a per-run merge (admin → repo → job). It is applied only
+    to the subprocess env and model resolution — never to process-wide
+    ``os.environ`` (safe for concurrent activities on a persistent worker).
+    """
+    from src.ai.llm_run_config import llm_config_to_env, resolve_model_for_tier
+
+    executor_type = get_executor_type(llm_config)
+    overlay = llm_config_to_env(llm_config)
+    merged_extra = {**(extra_env or {}), **overlay}
+    # Resolve model centrally so overrides win without mutating os.environ;
+    # backends treat unknown tiers as concrete model ids (pass-through).
+    concrete_model = resolve_model_for_tier(model_tier, llm_config)
 
     if executor_type == "opencode":
         from src.ai.opencode_executor import execute as _execute
@@ -182,42 +203,42 @@ async def execute(
     return await _execute(
         prompt=prompt,
         agent_name=agent_name,
-        model_tier=model_tier,
+        model_tier=concrete_model,
         cwd=cwd,
         max_turns=max_turns,
         on_stream=on_stream,
-        extra_env=extra_env,
+        extra_env=merged_extra or None,
         idle_timeout_s=idle_timeout_s,
     )
 
 
-def resolve_model(tier: str) -> str:
+def resolve_model(tier: str, llm_config: dict[str, str] | None = None) -> str:
     """Resolve a model tier name to a concrete model ID via the active backend."""
-    executor_type = get_executor_type()
-    if executor_type == "opencode":
-        from src.ai.opencode_executor import resolve_model as _resolve
-    elif executor_type == "codex":
-        from src.ai.codex_executor import resolve_model as _resolve
-    else:
-        from src.ai.claude_executor import resolve_model as _resolve
-    return _resolve(tier)
+    from src.ai.llm_run_config import resolve_model_for_tier
+
+    return resolve_model_for_tier(tier, llm_config)
 
 
-def build_env() -> dict[str, str]:
+def build_env(llm_config: dict[str, str] | None = None) -> dict[str, str]:
     """Build environment dict for the active executor's subprocess."""
-    executor_type = get_executor_type()
+    executor_type = get_executor_type(llm_config)
     if executor_type == "opencode":
         from src.ai.opencode_executor import _build_env
     elif executor_type == "codex":
         from src.ai.codex_executor import _build_env
     else:
         from src.ai.claude_executor import _build_env
-    return _build_env()
+    env = _build_env()
+    if llm_config:
+        from src.ai.llm_run_config import llm_config_to_env
+
+        env.update(llm_config_to_env(llm_config))
+    return env
 
 
-def get_preflight_cmd() -> list[str]:
+def get_preflight_cmd(llm_config: dict[str, str] | None = None) -> list[str]:
     """Return a minimal CLI command to validate credentials at preflight."""
-    executor_type = get_executor_type()
+    executor_type = get_executor_type(llm_config)
     if executor_type == "opencode":
         return [
             "opencode", "run",
@@ -237,8 +258,8 @@ def get_preflight_cmd() -> list[str]:
     ]
 
 
-def get_cli_name() -> str:
-    executor_type = get_executor_type()
+def get_cli_name(llm_config: dict[str, str] | None = None) -> str:
+    executor_type = get_executor_type(llm_config)
     if executor_type == "opencode":
         return "opencode"
     if executor_type == "codex":

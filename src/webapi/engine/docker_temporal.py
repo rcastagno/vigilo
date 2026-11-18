@@ -65,7 +65,10 @@ class DockerTemporalEngine:
     async def start(self, run: Run, job: Job, repo: Repository) -> None:
         import docker  # lazy
 
+        from src.ai.llm_run_config import llm_config_to_env
+        from src.webapi.db import _session_maker
         from src.webapi.ingestion import prepare_repo
+        from src.webapi.llm_config import resolve_merged_llm_config
 
         settings = get_settings()
         repo_dir = os.path.join(run.data_dir, "repo")
@@ -76,10 +79,6 @@ class DockerTemporalEngine:
         upload_path = None
         if repo.source_type == "gitlab" and repo.default_credential_id:
             token = await self._resolve_token(repo.default_credential_id)
-            # Patch push-back: the pipeline gates fix-branch push + MR creation on
-            # GITLAB_TOKEN being present. Only inject it when the owner opted in.
-            if repo.push_patches and token:
-                env["GITLAB_TOKEN"] = token
         if repo.source_type == "upload":
             from src.webapi.ingestion import upload_archive_path, upload_tree_dir
             archive = upload_archive_path(settings.uploads_dir, str(repo.id))
@@ -95,19 +94,14 @@ class DockerTemporalEngine:
             "TARGET_URL": job.target_url or "",
             "TEMPORAL_ADDRESS": settings.temporal_address,
         }
-        # Per-repository overrides of the global model/executor config (spec: global
-        # default in admin, overridable per repository). Unset keys fall back to the
-        # container's own env (compose/.env).
-        cfg = repo.pipeline_config or {}
-        _env_map = {
-            "executor": "VIGILO_EXECUTOR",
-            "model_small": "ANTHROPIC_SMALL_MODEL",
-            "model_medium": "ANTHROPIC_MEDIUM_MODEL",
-            "model_large": "ANTHROPIC_LARGE_MODEL",
-        }
-        for key, env_name in _env_map.items():
-            if cfg.get(key):
-                env[env_name] = cfg[key]
+        # Patch push-back: the pipeline gates fix-branch push + MR creation on
+        # GITLAB_TOKEN being present. Only inject it when the owner opted in.
+        if repo.source_type == "gitlab" and repo.push_patches and token:
+            env["GITLAB_TOKEN"] = token
+        # admin → repo → job LLM merge → executor-specific env (CODEX_*/OPENCODE_*/ANTHROPIC_*).
+        async with _session_maker()() as session:
+            merged = await resolve_merged_llm_config(session, repo, job)
+        env.update(llm_config_to_env(merged))
         # Custom scan instructions (description / focus / avoid) → worker env.
         scan = repo.scan_config or {}
         _scan_map = {

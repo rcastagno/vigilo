@@ -115,8 +115,8 @@ class Repository(Base):
         ForeignKey("credentials.id"), nullable=True
     )
     webhook_secret: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    # Per-repository overrides of the global admin config: keys among
-    # {executor, model_small, model_medium, model_large}. Empty → use global.
+    # Per-repository overrides: keys among {executor, model_small, model_medium,
+    # model_large, max_concurrent_pipelines}. Empty → worker .env / workflow defaults.
     pipeline_config: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
     # Custom scan instructions (Vigilo config equivalents): description + focus/avoid
     # rules. Keys: {description, focus, avoid}. Threaded into the pipeline per run.

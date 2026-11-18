@@ -9,6 +9,16 @@ import pytest
 # ---------------------------------------------------------------------------
 
 
+class TestFacadeResolveModelWithLlmConfig:
+    def test_llm_config_overrides_env(self, monkeypatch):
+        monkeypatch.setenv("VIGILO_EXECUTOR", "codex")
+        monkeypatch.setenv("CODEX_LARGE_MODEL", "env-27b")
+        from src.ai.executor import resolve_model
+        assert resolve_model(
+            "large", {"executor": "codex", "model_large": "Flash"}
+        ) == "Flash"
+
+
 class TestClaudeResolveModelPassthrough:
     def test_known_tier_resolves_normally(self, monkeypatch):
         for v in ("ANTHROPIC_SMALL_MODEL", "ANTHROPIC_MEDIUM_MODEL", "ANTHROPIC_LARGE_MODEL"):

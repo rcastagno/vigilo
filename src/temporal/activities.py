@@ -67,6 +67,9 @@ class ActivityInput:
     config_path: str | None = None
     output_path: str | None = None
     extra_context: str | None = None
+    # Per-run LLM merge (admin → repo → job). Applied only to subprocess env /
+    # model resolution — never to process-wide os.environ.
+    llm_config: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -277,6 +280,7 @@ async def run_agent(agent_name: str, input: ActivityInput) -> dict[str, Any]:
             cwd=input.repo_path,
             on_stream=_on_stream,
             idle_timeout_s=idle_timeout,
+            llm_config=input.llm_config or None,
         )
 
         # 5. Check execution success, then validate deliverable
@@ -471,13 +475,14 @@ async def preflight_validation(input: ActivityInput) -> None:
         # 2.5. Validate API credentials by making a minimal CLI call
         try:
             from src.ai.executor import build_env, get_cli_name, get_preflight_cmd
-            preflight_cmd = get_preflight_cmd()
-            cli_name = get_cli_name()
+            llm_cfg = input.llm_config or None
+            preflight_cmd = get_preflight_cmd(llm_cfg)
+            cli_name = get_cli_name(llm_cfg)
             proc = await asyncio.create_subprocess_exec(
                 *preflight_cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=build_env(),
+                env=build_env(llm_cfg),
             )
             _, stderr = await asyncio.wait_for(
                 proc.communicate(), timeout=120

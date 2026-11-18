@@ -8,6 +8,7 @@ from typing import Literal
 from fastapi_users import schemas
 from pydantic import BaseModel, field_validator, model_validator
 
+from src.ai.llm_run_config import CONFIG_KEYS, VALID_EXECUTORS
 from src.webapi.models import ROLE_USER
 from src.types.stages import VALID_PRESETS
 
@@ -139,7 +140,35 @@ class RepositoryRead(BaseModel):
     created_at: datetime
 
 
-_CONFIG_KEYS = {"executor", "model_small", "model_medium", "model_large"}
+# Re-export for tests / callers that imported _CONFIG_KEYS from this module.
+_CONFIG_KEYS = set(CONFIG_KEYS)
+
+
+def _validate_pipeline_dict(v: dict | None) -> dict | None:
+    """Shared validator for repository.pipeline_config and job.pipeline_overrides."""
+    if v is None:
+        return v
+    bad = set(v) - CONFIG_KEYS
+    if bad:
+        raise ValueError(f"unknown pipeline_config keys: {sorted(bad)}")
+    exe = v.get("executor")
+    if exe is not None and str(exe).strip():
+        if str(exe).strip().lower() not in VALID_EXECUTORS:
+            raise ValueError(
+                f"executor must be one of {sorted(VALID_EXECUTORS)} (got {exe!r})"
+            )
+    conc = v.get("max_concurrent_pipelines")
+    if conc is not None and str(conc).strip():
+        try:
+            n = int(str(conc).strip())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "max_concurrent_pipelines must be a positive integer"
+            ) from exc
+        if n < 1:
+            raise ValueError("max_concurrent_pipelines must be >= 1")
+        v = {**v, "max_concurrent_pipelines": str(n)}
+    return v
 
 
 class BulkDeleteRequest(BaseModel):
@@ -164,11 +193,7 @@ class RepositoryUpdate(BaseModel):
     @field_validator("pipeline_config")
     @classmethod
     def _known_keys(cls, v):
-        if v is not None:
-            bad = set(v) - _CONFIG_KEYS
-            if bad:
-                raise ValueError(f"unknown pipeline_config keys: {sorted(bad)}")
-        return v
+        return _validate_pipeline_dict(v)
 
     @field_validator("scan_config")
     @classmethod
@@ -212,9 +237,20 @@ class JobCreate(BaseModel):
             raise ValueError(f"stage_preset must be one of {VALID_PRESETS}")
         return v
 
+    @field_validator("pipeline_overrides")
+    @classmethod
+    def _pipeline_keys(cls, v):
+        return _validate_pipeline_dict(v) or {}
+
 
 class JobUpdate(BaseModel):
     notify_email: bool | None = None
+    pipeline_overrides: dict | None = None
+
+    @field_validator("pipeline_overrides")
+    @classmethod
+    def _pipeline_keys(cls, v):
+        return _validate_pipeline_dict(v)
 
 
 class JobRead(BaseModel):

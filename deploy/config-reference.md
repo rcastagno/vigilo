@@ -30,7 +30,7 @@ ready-to-edit starting point; this file is the exhaustive reference. See the
 | `VIGILO_TEMPORAL_ADDRESS` | `temporal:7233` | Temporal server (docker engine) |
 | `VIGILO_GLOBAL_CONCURRENT_RUN_CAP` | `2` | max simultaneously-running scans (admission control) |
 
-## Global pipeline defaults (seeded into admin_config on first boot; per-repo overridable)
+## Global pipeline defaults (seeded into admin_config on first boot; per-repo / per-job overridable)
 
 | Variable | Default |
 |---|---|
@@ -39,6 +39,26 @@ ready-to-edit starting point; this file is the exhaustive reference. See the
 | `VIGILO_DEFAULT_MODEL_MEDIUM` | `claude-sonnet-4-6` |
 | `VIGILO_DEFAULT_MODEL_LARGE` | `claude-opus-4-6` |
 | `VIGILO_DEFAULT_MAX_CONCURRENT_PIPELINES` | `8` |
+
+### LLM override hierarchy (platform runs)
+
+At run start the API merges **explicit** overrides, later layers winning (blank skipped):
+
+1. Repository `pipeline_config` (Settings → Pipeline config)
+2. Job `pipeline_overrides` (Jobs create/edit — optional)
+3. Worker process env (`.env` / compose) for any key still unset
+
+Keys: `executor` (`claude` \| `codex` \| `opencode`), `model_small`, `model_medium`,
+`model_large`, `max_concurrent_pipelines` (positive int; **`1` serializes** vuln-type
+pipelines — useful for capacity-limited LiteLLM). Model/executor values are passed as
+workflow `llm_config` and applied only to the agent subprocess (not process-wide
+`os.environ`). `max_concurrent_pipelines` is passed as workflow `pipeline_config` (default
+`8` when unset). For Codex/OpenCode, model overrides map to `CODEX_*` / `OPENCODE_*`
+env names (not only `ANTHROPIC_*`).
+
+`admin_config` / `VIGILO_DEFAULT_*` seed the Admin UI defaults but are **not**
+injected into every run (seeded Claude values would otherwise override a
+Codex/LiteLLM worker when job/repo leave fields blank).
 
 ## Notifications (email)
 

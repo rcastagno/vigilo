@@ -81,7 +81,7 @@ async def update_job(
     user: User = Depends(current_active_user),
     session: AsyncSession = Depends(get_async_session),
 ) -> JobRead:
-    """Update a job's settings (currently the report-email opt-in). Owner/admin only."""
+    """Update a job's settings (email opt-in, pipeline overrides). Owner/admin only."""
     job = await session.get(Job, job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -91,6 +91,8 @@ async def update_job(
     data = payload.model_dump(exclude_unset=True)
     if "notify_email" in data:
         job.notify_email = bool(data["notify_email"])
+    if "pipeline_overrides" in data and data["pipeline_overrides"] is not None:
+        job.pipeline_overrides = data["pipeline_overrides"]
     await session.commit()
     await session.refresh(job)
     return _to_read(job)
